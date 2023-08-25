@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+import sys
+import os
+import configparser
+import tempfile
+from PyQt5.QtWidgets import QMainWindow, QApplication, QPushButton, QWidget, QTabWidget, QVBoxLayout, QFormLayout, QLineEdit, QTextEdit, QDialog, QDialogButtonBox, QLabel
+from PyQt5 import QtCore, QtGui
+
+
+class ConfigItem(object):
+    def __init__(self, parent, name, value=None):
+        self.name = name
+        self.value = value
+        self.original_value = value
+
+        self.input = QLineEdit(parent)
+        if "password" in name:
+            self.input.setEchoMode(QLineEdit.EchoMode.Password)
+        if value is not None:
+            if len(value) >= 1:
+                if value[0] == "#":
+                    if len(value) >= 2:
+                        self.input.setPlaceholderText(value[1:].strip())
+                    self.value = None
+                else:
+                    self.input.setText(value)
+            else:
+                self.value = None
+
+        self.input.textChanged.connect(self._on_text_changed)
+
+    def _on_text_changed(self, text):
+        if len(text) > 0:
+            self.value = text
+        else:
+            self.value = None
+
+
+class PwdDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Password Required")
+
+        self.p = parent
+
+        QBtn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+
+        self.buttonBox = QDialogButtonBox(QBtn)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+
+        self.input = QLineEdit(self)
+        self.input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input.textChanged.connect(self.password_update)
+
+        self.layout = QFormLayout()
+        message = QLabel("Enter Your Password:")
+        self.layout.addRow(message, self.input)
+        self.layout.addRow(self.buttonBox)
+        self.setLayout(self.layout)
+
+    def password_update(self, text):
+        self.p.entered_password = text
+
+
+class TableWidget(QWidget):
+    def __init__(self, parent):
+        super(QWidget, self).__init__(parent)
+
+        self.layout = QVBoxLayout(self)
+        self.tabset = QTabWidget()
+
+        self.run_conf = tempfile.NamedTemporaryFile()
+
+        self.tabs = []
+        self.config_items = {}
+
+        self.entered_password = None
+
+        self.config_path = os.path.join(
+            os.environ["HOME"], ".config", "openforitgui")
+        self.config_file = os.path.join(self.config_path, "config.ini")
+
+        config = self.get_config(self.config_file)
+
+        for section_name, section in config.items():
+            self.config_items[section_name] = []
+            self.tabs.append(QWidget())
+            self.tabset.addTab(self.tabs[-1], section_name)
+            self.tabs[-1].layout = QFormLayout(self.tabs[-1])
+
+            for cfg_name, value in section.items():
+                self.config_items[section_name].append(ConfigItem(
+                    self.tabs[-1], cfg_name, value))
+                self.tabs[-1].layout.addRow(self.config_items[section_name][-1].name,
+                                            self.config_items[section_name][-1].input)
+
+            self.tabs[-1].setLayout(self.tabs[-1].layout)
+
+        # Add tabs to widget
+        self.layout.addWidget(self.tabset)
+
+        self.output = QTextEdit()
+        self.layout.addWidget(self.output)
+
+        self.process = QtCore.QProcess(self)
+        self.process.readyRead.connect(self.feedback_ready)
+
+        self.conn_button = QPushButton("Connect")
+        self.conn_button.clicked.connect(lambda: self.connect_to_vpn(None))
+        self.process.started.connect(
+            lambda: self.conn_button.setEnabled(False))
+        self.process.finished.connect(
+            lambda: self.conn_button.setEnabled(True))
+        self.layout.addWidget(self.conn_button)
+
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self.write_config)
+        self.layout.addWidget(self.save_button)
+
+        self.setLayout(self.layout)
+
+    def feedback_ready(self):
+        cursor = self.output.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertText(str(self.process.readAll(), 'utf-8'))
+        self.output.ensureCursorVisible()
+
+    def get_config(self, config_file: str):
+        config_object = configparser.ConfigParser()
+        config_dict = dict()
+
+        if os.path.exists(config_file):
+            with open(config_file, "r") as fd:
+                config_object.read_file(fd)
+        else:
+            config_object.read_string(get_default_config())
+
+        sections = config_object.sections()
+        for section in sections:
+            items = config_object.items(section)
+            config_dict[section] = dict(items)
+
+        return config_dict
+
+    def write_config(self):
+        os.makedirs(self.config_path, exist_ok=True)
+        with open(self.config_file, 'w') as fd:
+            for section_name, section in self.config_items.items():
+                fd.write(f"[{section_name}]\n")
+                for cfg_item in section:
+                    value = cfg_item.value if cfg_item.value is not None else cfg_item.original_value
+                    fd.write(f"{cfg_item.name} = {value}\n")
+
+        cursor = self.output.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertText("Configuration was saved!!")
+        self.output.ensureCursorVisible()
+
+    def connect_to_vpn(self, password_in):
+        password = password_in
+        launch_command = ['openfortivpn', '-c', self.run_conf.name]
+
+        for _, section in self.config_items.items():
+            for item in section:
+                if item.value is not None:
+                    if item.name == "password":
+                        password = item.value
+                    else:
+                        self.run_conf.write(
+                            f"{item.name} = {item.value}\n".encode())
+
+        self.run_conf.flush()
+
+        if password is not None:
+            if password != "NONE_REQUIRED":
+                launch_command.append("-p")
+                launch_command.append(password)
+
+            self.process.start('pkexec', launch_command)
+        else:
+            dlg = PwdDialog(self)
+            dlg.setWindowTitle("Password Required")
+            if dlg.exec():
+                self.connect_to_vpn(self.entered_password)
+
+
+def get_default_config():
+    return """[Connection]
+host = # server hostname or IP address
+port = 443
+username =
+password = # If saved this is stored in plain text
+trusted-cert = # If login fails this is given in output below
+[Advanced]
+realm =
+otp =
+otp-delay =
+otp-prompt =
+no-ftm-push = 1
+user-cert =
+user-key =
+pem-passphrase =
+ca-file =
+set-dns =
+use-resolvconf =
+set-routes =
+half-internet-routes =
+pppd-use-peerdns =
+use-syslog = 0
+insecure-ssl =
+cipher-list =
+persistent = 0
+seclevel-1 =
+"""
+
+
+class MainWin(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.title = 'OpenFortiVPN'
+        icon_location = os.path.join(os.path.dirname(
+            os.path.abspath(__file__)), "fortinet.png")
+        
+        self.setWindowIcon(QtGui.QIcon(icon_location))
+        self.setWindowTitle(self.title)
+        self.setMinimumSize(600, 200)
+
+        self.table_widget = TableWidget(self)
+        self.setCentralWidget(self.table_widget)
+
+        self.show()
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = MainWin()
+    sys.exit(app.exec_())

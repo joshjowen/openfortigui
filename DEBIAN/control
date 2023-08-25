@@ -1,0 +1,7 @@
+Maintainer: Josh Owen <josh.owen@universalfiledrobots.com.au>
+Package: openfortigui
+Version: 1.0
+Architecture: all
+Pre-Depends: dpkg (>= 1.16.1), python3
+Depends: openfortivpn, python3-pyqt5
+Description: Simple GUI to launch the openfortivpn application.

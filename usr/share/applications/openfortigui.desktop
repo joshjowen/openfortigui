@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=OpenForticlient
+Comment=Gui to Launch OpenForticlient
+Exec=/opt/openfortigui/openfortigui
+Path=/opt/openfortigui
+Icon=/opt/openfortigui/fortinet.png
+Terminal=false
+Type=Application
+Categories=Utility
